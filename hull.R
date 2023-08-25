@@ -1,23 +1,32 @@
-#  long-short exponential moving average crossover trading system
+#  long-short exponential moving average  trading system
 rm(list=ls())
 library(tidyverse)
 library(lubridate)
 library(tidyquant)
 library(Rcpp)
 library(TTR)
-
+library(plotly)
+library(profvis)
+library(rlang)
+# start_time <- Sys.time()
 R_path <- "Dropbox/Apps/R/projects/hull" ; path <- getwd()
 if (!grep(R_path, path, ignore.case = TRUE))  setwd(R_path)
+# files <- file.info(dir())
+# files <- tibble(dir()) 
+# files <- files |>
+#   filter(starts_with("CME_MINI_NQ1!, 180"))
+# files
 
-mvx_og <- read_csv("hull_es.csv", col_names = TRUE)
+mvx_og <- read_csv("CME_MINI_NQ1!, 180_d198f.csv", col_names = TRUE)
+# mvx_og <- read_csv("hull_es.csv", col_names = TRUE)
 
 names <- colnames(mvx_og) 
 names <- sub("time", "datetime", names)
-names <- sub("Plot...6", "slow", names)
-names <- sub("Plot...7", "fast", names)
+# names <- sub("Plot...6", "slow", names)
+# names <- sub("Plot...7", "fast", names)
 colnames(mvx_og) <- names
 mvx <- mvx_og
-# str(mvx)
+str(mvx)
 # glimpse(mvx)
 
 mvx |>
