@@ -13,6 +13,46 @@ library(clock, quietly = TRUE)
 library(here)
 conflicts_prefer(dplyr::lag)
 conflicts_prefer(dplyr::filter)
+theme_set(theme_light())                # ggplot theme or _bw()
+
+
+# calculates pnl summary statistics
+split_fun <- function(data, column_name, factor_name) {
+  summary_stats <- data |>
+    mutate(category = ifelse({{ column_name }} >= 0, "Positive", "Negative")) |>
+    group_by({{ factor_name }}, category) |>
+    summarise(
+      sum = sum({{ column_name }}),
+      count = n(),
+      mean = mean({{ column_name }}),
+      median = median({{ column_name }}),
+      sd = sd({{ column_name }}),
+      min = min({{ column_name }}),
+      max = max({{ column_name }})
+    ) |>
+    select({{ factor_name }}, category, sum, count, everything())
+  return(summary_stats)
+}
+################ C code for EMA calculation with no leading NA
+sourceCpp(
+  code =
+    "
+     #include <Rcpp.h>
+     // [[Rcpp::export]]
+     Rcpp::NumericVector ewmaRcpp(Rcpp::NumericVector x, double a){
+       int n = x.length();
+       Rcpp::NumericVector s(n);
+       s[0] = x[0];
+       if (n > 1) {
+         for (int i = 1; i < n; i++) {
+           s[i] =  s[i-1] + (x[i] - s[i-1])/(( a + 1)/2);
+         }
+       }
+       return s;
+     }
+    ")
+
+
 # start_time <- Sys.time()
 
 # files <- tibble(dir()) 
@@ -20,17 +60,16 @@ conflicts_prefer(dplyr::filter)
 #   filter(starts_with("CME_MINI_NQ1!, 180"))
 # files
 
-df_og <- read_csv("CME_MINI_NQ1!, 180_d198f.csv", col_names = TRUE)
+df_og <- read_csv("hull_one_minute.csv", col_names = TRUE)
 # df_og <- read_csv("hull_es.csv", col_names = TRUE)
 
-names <- colnames(df_og) 
+# names <- colnames(df_og) 
 # names <- sub("time", "datetime", names)
 # names <- sub("Plot...6", "slow", names)
 # names <- sub("Plot...7", "fast", names)
-colnames(df_og) <- names
+# colnames(df_og) <- names
 df <- df_og
 str(df)
-# glimpse(df)
 
 # discern time interval from input file
 first_row_time <- df$time[1] ; second_row_time <- df$time[2] ; third_row_time <- df$time[3]
@@ -49,25 +88,23 @@ epoch <- paste0(get_month(start_date),"-", get_day(start_date), "-",
                 get_year(start_date)-2000," to ", get_month(end_date), 
                 "-", get_day(end_date), "-", get_year(end_date)-2000)
 
-n_fast <- 16
-n_slow <- 25
+n_fast <- 5
+n_slow <- 8
 
 start_value <- 1162  # required overnight margin in points
-skid <- 0.5   # skid is expected loss on trade execution
+skid <- 0   # skid is expected loss on trade execution, set to ZERO for testing!
 runs <- expand.grid(lag = seq(n_fast, n_slow, 1))
 
 df |>
   ggplot(aes(x = time, y = close)) +
-  geom_point(size = 1, shape = 4, alpha = 0.1) +
+  geom_line(alpha = 0.4) +
   geom_smooth(method = "lm")
-
-start_value <- 1162  # required overnight margin in points
-skid <- 0.5   # skid is expected loss on trade execution
 
 ######################## EMA optimization sequence ########################
 
-for (j in seq_len(nrow(runs))) {
-  
+# for (j in seq_len(nrow(runs))) {
+j <- 1
+
   # calculate HMA, Hull Moving Avg, and ATR, average true range
   
   df <- df_og |>
@@ -76,10 +113,13 @@ for (j in seq_len(nrow(runs))) {
            yc_l = lag(close) - low,
            range = high - low) |>
     mutate(ATR = pmax(range, h_yc, yc_l, na.rm = TRUE)) |>
-    mutate(fast = HMA(close, n = n_fast),
-           slow = HMA(close, n = n_slow),
-           cross = fast - slow)
-  
+    mutate(fast = HMA(close, n = n_fast))
+df$slow <- ewmaRcpp(df$close, n_slow)  
+df <- df |>
+  mutate(cross = fast - slow)
+
+           # slow = HMA(close, n = n_slow),
+           # 
   # create trades from signals
   df <- df |>
     mutate(on = if_else(cross > 0 & lag(cross) < 0, 1, 0), 
@@ -182,7 +222,7 @@ for (j in seq_len(nrow(runs))) {
                                     yend=sell_price, color=factor(win_lose)), linewidth = 2) +
       scale_color_manual(values= c("red", "green3")) +
       scale_y_continuous(sec.axis=sec_axis(~ . *(max(df$high)/min(df$low))-(min(df$low)) )) +
-      geom_line(aes(x=time, y=equity *(max(high)/min(low)) + min(low)-min(equity)), size=2, alpha=0.7, color="deepskyblue") +
+      geom_line(aes(x=time, y=equity *(max(high)/min(low)) + min(low)-min(equity)), linewidth=2, alpha=0.7, color="deepskyblue") +
       labs(title=sprintf("NQ: EMA: %0.f, %.0f trades, ICAGR:, %.2f, bliss: %.2f, lake: %.2f", 
                          lag, nrow(trades), ICAGR, bliss, lake),
            subtitle=paste0(candles, "chart, ", round(date_range, 1), " yrs of data, ", epoch))+
@@ -223,4 +263,4 @@ for (j in seq_len(nrow(runs))) {
   
   ggsave(paste0("output/lake over time ", candles, " EMA ", lag, " ", epoch, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
   
-}       #################### optimization loop end    ##########################
+# }       #################### optimization loop end    ##########################
