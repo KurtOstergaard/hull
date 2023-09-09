@@ -55,10 +55,16 @@ sourceCpp(
 
 # start_time <- Sys.time()
 
+# Make another script for finding files and move this code there
 # files <- tibble(dir()) 
 # files <- files |>
 #   filter(starts_with("CME_MINI_NQ1!, 180"))
 # files
+
+
+product <- "ES"  #####  <- Yes, name it here. ES or NQ or whatever
+n_fast <- 5
+n_slow <- 8
 
 df_og <- read_csv("hull_one_minute.csv", col_names = TRUE)
 # df_og <- read_csv("hull_es.csv", col_names = TRUE)
@@ -81,6 +87,8 @@ if(interval == 0) Warning("HOLY SHIT! WE HAVE REACHED THE END OF TIME!")
 start_date <- min(df$time, na.rm=TRUE) 
 end_date <- max(df$time, na.rm=TRUE)
 date_range <- as.numeric(difftime(end_date, start_date, units = "days")) / 365.25
+the_high <- max(df$high)
+the_low <- min(df$low)
 
 trades_global = tibble() 
 results <- tibble() # create the file to collect the results of each run
@@ -88,8 +96,6 @@ epoch <- paste0(get_month(start_date),"-", get_day(start_date), "-",
                 get_year(start_date)-2000," to ", get_month(end_date), 
                 "-", get_day(end_date), "-", get_year(end_date)-2000)
 
-n_fast <- 5
-n_slow <- 8
 
 start_value <- 1162  # required overnight margin in points
 skid <- 0   # skid is expected loss on trade execution, set to ZERO for testing!
@@ -113,20 +119,16 @@ j <- 1
            yc_l = lag(close) - low,
            range = high - low) |>
     mutate(ATR = pmax(range, h_yc, yc_l, na.rm = TRUE)) |>
-    mutate(fast = HMA(close, n = n_fast))
+    mutate(fast = HMA(close, n = n_fast)) # Test (hlc)/3, (hlcc)/4, or others
 df$slow <- ewmaRcpp(df$close, n_slow)  
-df <- df |>
-  mutate(cross = fast - slow)
 
-           # slow = HMA(close, n = n_slow),
-           # 
   # create trades from signals
   df <- df |>
-    mutate(on = if_else(cross > 0 & lag(cross) < 0, 1, 0), 
-           off = if_else(cross < 0 & lag(cross) > 0, -1, 0),
-           signal = on + off)
+    mutate(cross = fast - slow,
+           on = if_else(cross > 0 & lag(cross) < 0, 1, 0), 
+           off = if_else(cross < 0 & lag(cross) > 0, -1, 0))
   
-  # drop first 25 rows to let HMA `warm up`
+  # drop first 25 rows to let HMA, EMA `warm up`
   df <-  slice(df, 26:n())  
   
   df$on[1] <-  if_else(df$cross[1] > 0, 1, 0)  # catch first row signal, if there
@@ -156,7 +158,7 @@ df <- df |>
   df <- df |>
     mutate(
       trade_pnl = if_else(signal == -1, (sell_price - buy_price) * buy_amount, 0),
-      win_lose = as.factor(if_else(trade_pnl>0, "winner", "loser")),
+      win_lose = as.factor(if_else(trade_pnl<0, "loser", "winner")),
       closed_pnl = cumsum(trade_pnl) + start_value,
       open_pnl = (close - buy_price) * buy_amount * open_trade,
       equity = open_pnl + closed_pnl,
@@ -211,7 +213,7 @@ df <- df |>
   trades_global <- trades_global |>
     bind_rows(trade_tmp)
   
-  if(date_range < 1.1) {  # Killer graph: trades by EMA with equity and market
+  if(date_range < 0.05) {  # Killer graph: trades by EMA with equity and market
     df |>        #  only print for 1 yr or less data
       ggplot(aes(x = time)) +
       geom_ribbon(aes(ymin=low, ymax=high, x=time, fill = "band"), alpha = 0.9)+
@@ -223,11 +225,11 @@ df <- df |>
       scale_color_manual(values= c("red", "green3")) +
       scale_y_continuous(sec.axis=sec_axis(~ . *(max(df$high)/min(df$low))-(min(df$low)) )) +
       geom_line(aes(x=time, y=equity *(max(high)/min(low)) + min(low)-min(equity)), linewidth=2, alpha=0.7, color="deepskyblue") +
-      labs(title=sprintf("NQ: EMA: %0.f, %.0f trades, ICAGR:, %.2f, bliss: %.2f, lake: %.2f", 
-                         lag, nrow(trades), ICAGR, bliss, lake),
+      labs(title=sprintf("%s: EMA: %0.f, %.0f trades, ICAGR:, %.2f, bliss: %.2f, lake: %.2f", 
+                         product, lag, nrow(trades), ICAGR, bliss, lake),
            subtitle=paste0(candles, "chart, ", round(date_range, 1), " yrs of data, ", epoch))+
       xlab("Date")+
-      ylab("NQ") +
+      ylab(product) +
       theme(legend.position = "none")
     
     ggsave(paste0("output/run ", candles, "chart EMA ", lag, " ", epoch, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
@@ -237,15 +239,16 @@ df <- df |>
     ggplot(aes(MAE_percent, trade_pnl_percent,  color=factor(win_lose))) +
     geom_point(shape=3, size=2,) +
     scale_color_manual(values= c("red","green3")) + 
-    labs(title=sprintf("NQ: EMA: %0.f, %.0f trades, ICAGR: %.2f, bliss: %.2f, lake: %.2f, DD: %.2f", 
-                       lag, nrow(trades), ICAGR, bliss, lake, drawdown),
+    labs(title=sprintf("%s: EMA: %0.f, %.0f trades, ICAGR: %.2f, bliss: %.2f, lake: %.2f, DD: %.2f", 
+                       product, lag, nrow(trades), ICAGR, bliss, lake, drawdown),
          subtitle=paste0(candles, " chart, ", round(date_range, 1), " yrs of data, ", epoch))+
     xlab("Maximum Adverse Excursion") + 
     ylab("Trade P&L") +
     theme(legend.position = "none")
   
   
-  ggsave(paste0("output/stop ", candles, " EMA ", lag, " ", epoch, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
+  ggsave(paste0("output/stop ", candles, " EMA ", lag, " ", epoch, run_time, ".pdf"), 
+         width=10, height=8, units="in", dpi=300)
   
   df |>        # lake over time with equity line
     ggplot(aes(x = time)) +
@@ -264,3 +267,96 @@ df <- df |>
   ggsave(paste0("output/lake over time ", candles, " EMA ", lag, " ", epoch, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
   
 # }       #################### optimization loop end    ##########################
+
+  
+  # save the results and trades_global files
+  run_id <- paste0( " ", candles, " EMAs ", EMA_low, "-", EMA_high, " from", epoch)
+  results_file_name <- paste0(path, "/output/results ", run_id, run_time, ".csv", sep="")
+  write_csv(results, results_file_name)
+  trade_file_name <- paste0(path, "/output/trades ", run_id, run_time, ".csv", sep="")
+  write_csv(trades_global, trade_file_name)
+  
+  ####################   risk and return optimization scatterplots
+  
+  results |>         # labels for EMA numbers, little white boxes
+    ggplot(aes(x = ICAGR, y = drawdown, label = lag)) +
+    geom_point(shape=4) +
+    geom_label_repel(label.padding=unit(0.15, "lines"), label.size=0.05, 
+                     min.segment.length=0, force=0.5, max.iter=10000) +
+    labs(title=paste("Growth rate vs drawdowns"),
+         subtitle=paste0(candles, " periods, EMA: ", EMA_low, "-", EMA_high,", ",
+                         round(date_range, 1), " yrs of data, ", epoch)) +
+    coord_cartesian(ylim = c(NA,0.5))
+  ggsave(paste0("output/risk ICAGR v DD ", run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
+  
+  results |>
+    ggplot(aes(x = lake, y = bliss, label = lag)) +
+    geom_point(shape=4) +
+    geom_label_repel(label.padding=unit(0.15, "lines"), label.size=0.05, 
+                     min.segment.length=0, force=0.5, max.iter=10000) +
+    labs(title=paste("Lake ratio vs bliss"),
+         subtitle=paste0(candles, " periods, EMA: ", EMA_low, "-", EMA_high,", ",
+                         round(date_range, 1), " yrs of data, ", epoch))
+  ggsave(paste0("output/risk lake v bliss ", run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
+  
+  results |>
+    ggplot(aes(x = lake, y = drawdown, label = lag)) +
+    geom_point(shape=4) +
+    geom_label_repel(label.padding=unit(0.15, "lines"), label.size=0.05, 
+                     min.segment.length=0, force=0.5, max.iter=10000) +
+    labs(title=paste("Lake ratio vs drawdowns"),
+         subtitle=paste0(candles, " periods, EMA: ", EMA_low, "-", EMA_high,", ",
+                         round(date_range, 1), " yrs of data, ", epoch)) +
+    coord_cartesian(ylim = c(NA,1))
+  ggsave(paste0("output/risk lake v DD ", run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
+  
+  results |>
+    ggplot(aes(x = end_value, y = drawdown, label = lag)) +
+    geom_point(shape=4) +
+    geom_label_repel(label.padding=unit(0.15, "lines"), label.size=0.05, 
+                     min.segment.length=0, force=0.5, max.iter=10000) +
+    scale_x_continuous(labels=scales::dollar_format()) +
+    labs(title=paste("Ending value vs drawdowns"),
+         subtitle=paste0(candles, " periods, EMA: ", EMA_low, "-", EMA_high,", ",
+                         round(date_range, 1), " yrs of data, ", epoch)) +
+    coord_cartesian(ylim = c(NA,1))
+  ggsave(paste0("output/risk end value v DD ", run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
+  
+  # geom_smooth(method = "lm")
+  
+  results |>
+    ggplot(aes(x = ICAGR, y = lake, label = lag)) +
+    geom_path() +
+    geom_label_repel(label.padding=unit(0.1, "lines"), label.size=0.05, 
+                     min.segment.length=0, force=0.5, max.iter=10000) +
+    labs(title=paste("Growth rate vs lake ratio"),
+         subtitle=paste0(candles, " periods, EMA: ", EMA_low, "-", EMA_high,", ",
+                         round(date_range, 1), " yrs of data, ", epoch))
+  ggsave(paste0("output/risk ICAGR v lake ", run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
+  
+  results |>
+    ggplot(aes(x = bliss, y = drawdown, label = lag)) +
+    geom_path(color="gray60") +
+    geom_label_repel(label.padding=unit(0.15, "lines"), label.size=0.05, 
+                     min.segment.length=0, force=0.5, max.iter=10000) +
+    labs(title=paste("Bliss vs drawdowns"),
+         subtitle=paste0(candles, " periods, EMA: ", EMA_low, "-", EMA_high,", ",
+                         round(date_range, 1), " yrs of data, ", epoch)) 
+  # coord_cartesian(ylim = c(NA,1))
+  ggsave(paste0("output/risk bliss v DD ", run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
+  
+  # df |> 
+  #   ggplot(aes(x = time)) +
+  #   geom_line(aes(y=drawdown)) +
+  #   # geom_line(aes(y=equity * max(drawdown)/max(equity)), color="blue") +
+  #   geom_line(aes(x=time, y=real_close *max(drawdown)/max(real_close) ), alpha=1, color="gray80") +
+  #   labs(title=paste("Drawdowns over time with market price overlay"),
+  #        subtitle=paste0(candles, " periods, EMA: ", EMA_low, "-", EMA_high,", ",
+  #                        round(date_range, 1), " yrs of data, ", epoch))
+  # ggsave(paste0("output/DD over time ", run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
+  
+  end_time <- Sys.time() ;forever <- end_time - start_time
+  secs <- forever  / nrow(runs)
+  sprintf("Yo, %1.2f total time and %1.2f per run, %i runs, over %1.2f years of data", 
+          forever, secs, nrow(runs), date_range)
+  
