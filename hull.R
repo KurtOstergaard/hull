@@ -14,6 +14,8 @@ library(ggrepel, quietly = TRUE)
 library(here)
 conflicts_prefer(dplyr::lag)
 conflicts_prefer(dplyr::filter)
+
+options(ggrepel.max.overlaps = Inf)      # ggrepel options for ggplot2
 theme_set(theme_light())                # ggplot theme or _bw()
 start_time <- Sys.time()               # for internal monitoring
 run_time <- paste0(" ", get_hour(start_time), "-", get_minute(start_time))
@@ -61,9 +63,9 @@ sourceCpp(
 # files
 
 product <- "ES"  #####  <- Yes, name it here. ES or NQ or whatever
-fast_seq <- 20
-slow_seq <- 35
-runs <- expand.grid(slow=seq(fast_seq, slow_seq, 1), fast=seq(5, fast_seq, 1))
+fast_seq <- 21
+slow_seq <- 50
+runs <- expand.grid(slow=seq(50, slow_seq, 1), fast=seq(21, fast_seq, 1))
 
 df_og <- read_csv("hull_one_minute.csv", col_names = TRUE)
 # df_og <- read_csv("hull_es.csv", col_names = TRUE)
@@ -73,10 +75,9 @@ df_og <- read_csv("hull_one_minute.csv", col_names = TRUE)
 # names <- sub("Plot...6", "slow", names)
 # names <- sub("Plot...7", "fast", names)
 # colnames(df_og) <- names
-df <- df_og
-str(df)
 
 # discern time interval from input file
+df <- df_og
 first_row_time <- df$time[1] ; second_row_time <- df$time[2] ; third_row_time <- df$time[3]
 interval <- min(as.numeric(difftime(second_row_time, first_row_time, units = "mins")),
                 as.numeric(difftime(third_row_time, second_row_time, units = "mins")))
@@ -84,7 +85,7 @@ candles <- if(interval>60) sprintf("%.0f hrs", interval/60) else sprintf("%.0f m
 if(interval == 0) Warning("HOLY SHIT! WE HAVE REACHED THE END OF TIME!")
 
 start_date <- min(df$time, na.rm=TRUE) 
-end_date <- max(df$time, na.rm=TRUE)
+end_date <- max(df$time)
 date_range <- as.numeric(difftime(end_date, start_date, units = "days"))
 the_high <- max(df$high)
 the_low <- min(df$low)
@@ -100,45 +101,46 @@ start_value <- 1162  # required overnight margin in points
 skid <- 0   # skid is expected loss on trade execution, set to ZERO for testing!
 
 
-##########################
-
-df |>
-  ggplot(aes(x = time, y = close)) +
-  geom_line(alpha = 0.4) +
-  geom_smooth(method = "lm")
-
 ######################## optimization sequence ########################
 
-for (j in seq_len(nrow(runs))) {
-  # j <- 256
-  
+
+# for (j in seq_len(nrow(runs))) {
+  df <- df_og
   fast_lag <- runs$fast[j]
   slow_lag <- runs$slow[j]
+  if(fast_lag == slow_lag) {
+    results[j,1:17] <- as_tibble_row(          
+      c(j=j, fast_lag=fast_lag, slow_lag=slow_lag, ICAGR=0, drawdown=0, 
+        bliss=0, lake=0, end_value=0, trade_test=0, 
+        trade_count=0, wins=0, losses=0, win_rate=0,
+        trade_total_pnl=0, won=0, lost=0, dollar_won=0),
+      .name_repair = "universal")
+    next
+    }
+
+      # mutate(fast = HMA(close, fast_lag)) # Test (hlc)/3, (hlcc)/4, or others
+  # df$fast <- ewmaRcpp(df$close, fast_lag)
+  # df$slow <- ewmaRcpp(df$close, slow_lag)  
   
   # calculate HMA, Hull Moving Avg, and ATR, average true range
-  df <- df_og |>
+  df <- df |>
     select(time:close, Volume) |>
     mutate(h_yc = high - lag(close),
            yc_l = lag(close) - low,
            range = high - low, 
-    ATR = pmax(range, h_yc, yc_l, na.rm = TRUE)) 
-
-    # mutate(fast = HMA(close, fast_lag)) # Test (hlc)/3, (hlcc)/4, or others
-  df$fast <- ewmaRcpp(df$close, fast_lag)
-  df$slow <- ewmaRcpp(df$close, slow_lag)  
-  
-  # create trades from signals
-  df <- df |>
-    mutate(cross = fast - slow,
-           on = if_else(cross > 0 & lag(cross) < 0, 1, 0), 
-           off = if_else(cross < 0 & lag(cross) > 0, -1, 0))
-  
-  # drop first 25 rows to let HMA, EMA `warm up`
+    ATR = pmax(range, h_yc, yc_l, na.rm = TRUE),
+    fast = HMA(close, fast_lag),
+    slow = HMA(close, slow_lag) +1e-6, 
+    cross = fast - slow,
+    on = if_else(cross > 0 & lag(cross) < 0, 1, 0), 
+    off = if_else(cross < 0 & lag(cross) > 0, -1, 0))
+           
+  # drop first 25 rows to let moving averages 'warm up'
   df <-  slice(df, 26:n())  
-  
   df$on[1] <-  if_else(df$cross[1] > 0, 1, 0)  # catch first row signal, if there
-  
-  df <- df|>                         # trade details 
+  df$off[1] <- 0
+
+    df <- df|>                         # trade details 
     mutate(signal = on + off,
            open_trade = cumsum(signal),
            buy_date = if_else(on == 1, as_datetime(lead(time), tz="America/New_York"), NA),
@@ -149,7 +151,7 @@ for (j in seq_len(nrow(runs))) {
     fill(buy_price) |>
     fill(buy_date)  |>
     drop_na(buy_price)
-  
+
   if(df$on[nrow(df)] == 1) {     # no new trades in last period
     df$on[nrow(df)] = 0 ; df$signal[nrow(df)] = 0
   } else if (df$cross[nrow(df)] >0 | df$signal[nrow(df)] == -1) { # close trade if long at EOF
@@ -230,8 +232,10 @@ for (j in seq_len(nrow(runs))) {
     trades_w <- trades |>
     filter(buy_date >"2023-08-27" & buy_date < "2023-08-29") 
     
-  # if(date_range < 01.05) {  # Killer graph: trades by EMA with equity and market
-    df |>        #  only print for 1 yr or less data
+    gg <- df 
+      
+  if(ICAGR > 0) {  # graph trades by EMA with equity and market
+    gg |>        #  only print for positive ICAGR
       filter(time >"2023-08-27" & time < "2023-08-29") |>
       ggplot(aes(x = time)) +
       geom_line(aes(x=time, y=slow), alpha=0.6) +
@@ -248,13 +252,14 @@ for (j in seq_len(nrow(runs))) {
       ylab(product) +
       theme(legend.position = "none")
     
-    ggsave(paste0(here("output", "run "), candles," fast ", runs$fast[j], " slow ", runs$slow[j], " ", epoch, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
-  # } if statement close
-    
+    ggsave(paste0(here("output", "run "), candles," ", runs$fast[j], 
+                  "-", runs$slow[j], " ", epoch, run_time, " ", j, ".pdf"), 
+           width=10, height=8, units="in", dpi=300)
+
       # scale_y_continuous(sec.axis=sec_axis(~ . *(max(df$high)/min(df$low))-(min(df$low)) )) +
       # geom_line(aes(x=time, y=equity *(max(high)/min(low)) + min(low)-min(equity)), linewidth=2, alpha=0.7, color="deepskyblue") +
-  
-  trades |>   #copy for backup
+
+    trades |>   # Stop analysis
     ggplot(aes(MAE_percent, trade_pnl_percent,  color=factor(win_lose))) +
     geom_point(shape=3, size=2,) +
     scale_color_manual(values= c("red","green3")) + 
@@ -265,11 +270,11 @@ for (j in seq_len(nrow(runs))) {
     ylab("Trade P&L") +
     theme(legend.position = "none")
   
-  
-  ggsave(paste0(here("output", "stop "), candles, " EMA ", slow_lag, " ", epoch, run_time, ".pdf"), 
+  ggsave(paste0(here("output", "stop "), candles," ", runs$fast[j], 
+                "-", runs$slow[j], " ", epoch, run_time, " ", j, ".pdf"), 
          width=10, height=8, units="in", dpi=300)
-  
-  df |>        # lake over time with equity line
+    
+  gg |>        # lake over time with equity line
     ggplot(aes(x = time)) +
     geom_ribbon(aes(ymin=equity*20, ymax=highwater*20, x=time, fill = "band"), alpha = 0.9)+
     scale_color_manual("", values="grey12")+
@@ -283,9 +288,12 @@ for (j in seq_len(nrow(runs))) {
     scale_y_continuous(labels=scales::dollar_format(), limits = c(0,NA)) +
     theme(legend.position = "none")
   
-  ggsave(paste0(here("output", "lake over time "), candles, " EMA ", slow_lag, " ", epoch, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
-  
-}       #################### optimization loop end    ##########################
+  ggsave(paste0(here("output", "lake over time "), candles," ", runs$fast[j], 
+                "-", runs$slow[j], " ", epoch, run_time, " ", j, ".pdf"), 
+         width=10, height=8, units="in", dpi=300)
+  } # if printing statement close
+    
+# }       #################### optimization loop end    ##########################
 
   
   # save the results and trades_global files
@@ -296,11 +304,23 @@ for (j in seq_len(nrow(runs))) {
   trade_file_name <- paste0(here("output", "trades "), run_id, run_time, ".csv", sep="")
   write_csv(trades_global, trade_file_name)
   
+  end_time <- Sys.time() ;forever <- end_time - start_time
+  secs <- forever  / nrow(runs)
+  sprintf("Yo, %1.2f min,  %1.2f per run, %i runs, %s records, over %1.2f days of data", 
+          forever, secs, nrow(results), format(nrow(df), big.mark=","), date_range)
+  
+  
+  ##########################
+  
+  df |>
+    ggplot(aes(x = time, y = close)) +
+    geom_line(alpha = 0.4) +
+    geom_smooth(method = "lm")
   ####################   risk and return optimization scatterplots
   
   results |>         # labels for EMA numbers, little white boxes
-    ggplot(aes(x = ICAGR, y = drawdown, label = lag)) +
-    geom_point(shape=4) +
+    ggplot(aes(x = ICAGR, y = drawdown, label = paste0(fast_lag, "-", slow_lag))) +
+    geom_path(color="gray60") +
     geom_label_repel(label.padding=unit(0.15, "lines"), label.size=0.05, 
                      min.segment.length=0, force=0.5, max.iter=10000) +
     labs(title=paste("Growth rate vs drawdowns"),
@@ -308,12 +328,12 @@ for (j in seq_len(nrow(runs))) {
                max(runs$fast), " slow ",min(runs$slow), "-", 
                max(runs$slow),", ", round(date_range, 0),
                          "D of data, ", epoch)) +
-    coord_cartesian(ylim = c(NA,0.5))
+    coord_cartesian(xlim = c(0, NA))
   ggsave(paste0(here("output", "risk ICAGR v DD "), run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
   
   results |>
-    ggplot(aes(x = lake, y = bliss, label = slow_lag)) +
-    geom_point(shape=4) +
+    ggplot(aes(x = lake, y = bliss, label = paste0(fast_lag, "-", slow_lag))) +
+    geom_path(color="gray60") +
     geom_label_repel(label.padding=unit(0.15, "lines"), label.size=0.05, 
                      min.segment.length=0, force=0.5, max.iter=10000) +
     labs(title=paste("Lake ratio vs bliss"),
@@ -324,8 +344,8 @@ for (j in seq_len(nrow(runs))) {
   ggsave(paste0(here("output", "risk lake v bliss "), run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
   
   results |>
-    ggplot(aes(x = lake, y = drawdown, label = lag)) +
-    geom_point(shape=4) +
+    ggplot(aes(x = lake, y = drawdown, label = paste0(fast_lag, "-", slow_lag))) +
+    geom_path(color="gray60") +
     geom_label_repel(label.padding=unit(0.15, "lines"), label.size=0.05, 
                      min.segment.length=0, force=0.5, max.iter=10000) +
     labs(title=paste("Lake ratio vs drawdowns"),
@@ -336,8 +356,8 @@ for (j in seq_len(nrow(runs))) {
   ggsave(paste0(here("output", "risk lake v DD "), run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
   
   results |>
-    ggplot(aes(x = end_value, y = drawdown, label = lag)) +
-    geom_point(shape=4) +
+    ggplot(aes(x = end_value, y = drawdown, label = paste0(fast_lag, "-", slow_lag))) +
+    geom_path(color="gray60") +
     geom_label_repel(label.padding=unit(0.15, "lines"), label.size=0.05, 
                      min.segment.length=0, force=0.5, max.iter=10000) +
     scale_x_continuous(labels=scales::dollar_format()) +
@@ -345,15 +365,15 @@ for (j in seq_len(nrow(runs))) {
          subtitle=paste0(candles, " periods, fast ", min(runs$fast), "-", 
                          max(runs$fast), " slow ",min(runs$slow), "-", 
                          max(runs$slow),", ", round(date_range, 0),
-                         "D of data, ", epoch)) +
-    coord_cartesian(ylim = c(NA,1))
+                         "D of data, ", epoch)) 
+#    coord_cartesian(ylim = c(NA,1))
   ggsave(paste0(here("output", "risk end value v DD "), run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
   
   # geom_smooth(method = "lm")
   
   results |>
-    ggplot(aes(x = ICAGR, y = lake, label = lag)) +
-    geom_path() +
+    ggplot(aes(x = ICAGR, y = lake, label = paste0(fast_lag, "-", slow_lag))) +
+    geom_path(color="gray60") +
     geom_label_repel(label.padding=unit(0.1, "lines"), label.size=0.05, 
                      min.segment.length=0, force=0.5, max.iter=10000) +
     labs(title=paste("Growth rate vs lake ratio"),
@@ -364,7 +384,7 @@ for (j in seq_len(nrow(runs))) {
   ggsave(paste0(here("output", "risk ICAGR v lake "), run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
   
   results |>
-    ggplot(aes(x = bliss, y = drawdown, label = lag)) +
+    ggplot(aes(x = bliss, y = drawdown, label = paste0(fast_lag, "-", slow_lag))) +
     geom_path(color="gray60") +
     geom_label_repel(label.padding=unit(0.15, "lines"), label.size=0.05, 
                      min.segment.length=0, force=0.5, max.iter=10000) +
@@ -376,6 +396,9 @@ for (j in seq_len(nrow(runs))) {
   # coord_cartesian(ylim = c(NA,1))
   ggsave(paste0(here("output", "risk bliss v DD "), run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
   
+  
+  
+  
   # df |> 
   #   ggplot(aes(x = time)) +
   #   geom_line(aes(y=drawdown)) +
@@ -385,9 +408,4 @@ for (j in seq_len(nrow(runs))) {
   #        subtitle=paste0(candles, " periods, EMA: ", EMA_low, "-", EMA_high,", ",
   #                        round(date_range, 0), "D of data, ", epoch))
   # ggsave(paste0("output/DD over time ", run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
-  
-  end_time <- Sys.time() ;forever <- end_time - start_time
-  secs <- forever  / nrow(runs)
-  sprintf("Yo, %1.2f total time and %1.2f per run, %i runs, over %1.2f years of data", 
-          forever, secs, nrow(runs), date_range)
   
