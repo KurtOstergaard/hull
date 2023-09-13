@@ -63,9 +63,9 @@ sourceCpp(
 # files
 
 product <- "ES"  #####  <- Yes, name it here. ES or NQ or whatever
-fast_seq <- 21
-slow_seq <- 50
-runs <- expand.grid(slow=seq(50, slow_seq, 1), fast=seq(21, fast_seq, 1))
+fast_seq <- 50
+slow_seq <- 60
+runs <- expand.grid(slow=seq(6, slow_seq, 1), fast=seq(4, fast_seq, 1))
 
 df_og <- read_csv("hull_one_minute.csv", col_names = TRUE)
 # df_og <- read_csv("hull_es.csv", col_names = TRUE)
@@ -103,8 +103,8 @@ skid <- 0   # skid is expected loss on trade execution, set to ZERO for testing!
 
 ######################## optimization sequence ########################
 
+for (j in seq_len(nrow(runs))) {
 
-# for (j in seq_len(nrow(runs))) {
   df <- df_og
   fast_lag <- runs$fast[j]
   slow_lag <- runs$slow[j]
@@ -130,13 +130,13 @@ skid <- 0   # skid is expected loss on trade execution, set to ZERO for testing!
            range = high - low, 
     ATR = pmax(range, h_yc, yc_l, na.rm = TRUE),
     fast = HMA(close, fast_lag),
-    slow = HMA(close, slow_lag) +1e-6, 
+    slow = (HMA(close, slow_lag) +1e-6), 
     cross = fast - slow,
     on = if_else(cross > 0 & lag(cross) < 0, 1, 0), 
     off = if_else(cross < 0 & lag(cross) > 0, -1, 0))
            
-  # drop first 25 rows to let moving averages 'warm up'
-  df <-  slice(df, 26:n())  
+  # drop first 10+ high lag rows to let moving averages 'warm up'
+  df <-  slice(df, (max(slow_lag, fast_lag)+10):n())  
   df$on[1] <-  if_else(df$cross[1] > 0, 1, 0)  # catch first row signal, if there
   df$off[1] <- 0
 
@@ -152,6 +152,8 @@ skid <- 0   # skid is expected loss on trade execution, set to ZERO for testing!
     fill(buy_date)  |>
     drop_na(buy_price)
 
+    # df$open_trade <- cumsum(df$signal)
+    
   if(df$on[nrow(df)] == 1) {     # no new trades in last period
     df$on[nrow(df)] = 0 ; df$signal[nrow(df)] = 0
   } else if (df$cross[nrow(df)] >0 | df$signal[nrow(df)] == -1) { # close trade if long at EOF
@@ -232,10 +234,10 @@ skid <- 0   # skid is expected loss on trade execution, set to ZERO for testing!
     trades_w <- trades |>
     filter(buy_date >"2023-08-27" & buy_date < "2023-08-29") 
     
-    gg <- df 
+
       
   if(ICAGR > 0) {  # graph trades by EMA with equity and market
-    gg |>        #  only print for positive ICAGR
+    df |>        #  only print for positive ICAGR
       filter(time >"2023-08-27" & time < "2023-08-29") |>
       ggplot(aes(x = time)) +
       geom_line(aes(x=time, y=slow), alpha=0.6) +
@@ -274,7 +276,7 @@ skid <- 0   # skid is expected loss on trade execution, set to ZERO for testing!
                 "-", runs$slow[j], " ", epoch, run_time, " ", j, ".pdf"), 
          width=10, height=8, units="in", dpi=300)
     
-  gg |>        # lake over time with equity line
+  df |>        # lake over time with equity line
     ggplot(aes(x = time)) +
     geom_ribbon(aes(ymin=equity*20, ymax=highwater*20, x=time, fill = "band"), alpha = 0.9)+
     scale_color_manual("", values="grey12")+
@@ -293,7 +295,7 @@ skid <- 0   # skid is expected loss on trade execution, set to ZERO for testing!
          width=10, height=8, units="in", dpi=300)
   } # if printing statement close
     
-# }       #################### optimization loop end    ##########################
+}       #################### optimization loop end    ##########################
 
   
   # save the results and trades_global files
@@ -328,7 +330,7 @@ skid <- 0   # skid is expected loss on trade execution, set to ZERO for testing!
                max(runs$fast), " slow ",min(runs$slow), "-", 
                max(runs$slow),", ", round(date_range, 0),
                          "D of data, ", epoch)) +
-    coord_cartesian(xlim = c(0, NA))
+    coord_cartesian(xlim = c(1, NA))
   ggsave(paste0(here("output", "risk ICAGR v DD "), run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
   
   results |>
@@ -380,7 +382,8 @@ skid <- 0   # skid is expected loss on trade execution, set to ZERO for testing!
          subtitle=paste0(candles, " periods, fast ", min(runs$fast), "-", 
                          max(runs$fast), " slow ",min(runs$slow), "-", 
                          max(runs$slow),", ", round(date_range, 0),
-                         "D of data, ", epoch))
+                         "D of data, ", epoch)) +
+    coord_cartesian(xlim = c(1, NA))
   ggsave(paste0(here("output", "risk ICAGR v lake "), run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
   
   results |>
@@ -396,8 +399,28 @@ skid <- 0   # skid is expected loss on trade execution, set to ZERO for testing!
   # coord_cartesian(ylim = c(NA,1))
   ggsave(paste0(here("output", "risk bliss v DD "), run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
   
+  library(plotly)
+  # volcano is a numeric matrix that ships with R
+  fig <- plot_ly(z = ~volcano)
+  fig <- fig %>% add_surface()
+  fig
+  
+fig2 <-  results |>
+  select(fast_lag, slow_lag, ICAGR) |>
+  pivot_wider(names_from = slow_lag, values_from = ICAGR)|>
+  as.matrix() 
+    plot_ly(z = ~fig2) |>
+    add_surface()
+  
+  fig2
   
   
+  # Basic 3D surface plot
+  library(plotly)
+  # volcano is a numeric matrix that ships with R
+  fig <- plot_ly(z = ~vol3)
+  fig <- fig %>% add_surface()
+  fig
   
   # df |> 
   #   ggplot(aes(x = time)) +
