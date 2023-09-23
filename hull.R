@@ -1,4 +1,4 @@
-#  long-short exponential moving average  trading system
+#  hull.R - hull moving average trading system
 rm(list=ls())
 library(conflicted)
 library(tidyverse, quietly = TRUE)
@@ -56,12 +56,6 @@ sourceCpp(
      }
     ")
 
-# Make another script for finding files and move this code there
-# files <- tibble(dir()) 
-# files <- files |>
-#   filter(starts_with("CME_MINI_NQ1!, 180"))
-# files
-
 product <- "ES"  #####  <- Yes, name it here. ES or NQ or whatever
 fast_seq <- 50
 slow_seq <- 60
@@ -70,19 +64,13 @@ runs <- expand.grid(slow=seq(6, slow_seq, 1), fast=seq(4, fast_seq, 1))
 df_og <- read_csv("hull_one_minute.csv", col_names = TRUE)
 # df_og <- read_csv("hull_es.csv", col_names = TRUE)
 
-# names <- colnames(df_og) 
-# names <- sub("time", "datetime", names)
-# names <- sub("Plot...6", "slow", names)
-# names <- sub("Plot...7", "fast", names)
-# colnames(df_og) <- names
-
 # discern time interval from input file
 df <- df_og
 first_row_time <- df$time[1] ; second_row_time <- df$time[2] ; third_row_time <- df$time[3]
 interval <- min(as.numeric(difftime(second_row_time, first_row_time, units = "mins")),
                 as.numeric(difftime(third_row_time, second_row_time, units = "mins")))
 candles <- if(interval>60) sprintf("%.0f hrs", interval/60) else sprintf("%.0f min", interval)
-if(interval == 0) Warning("HOLY SHIT! WE HAVE REACHED THE END OF TIME!")
+if(interval <= 0) Warning("HOLY SHIT! WE HAVE REACHED THE END OF TIME!")
 
 start_date <- min(df$time, na.rm=TRUE) 
 end_date <- max(df$time)
@@ -152,8 +140,6 @@ for (j in seq_len(nrow(runs))) {
     fill(buy_date)  |>
     drop_na(buy_price)
 
-    # df$open_trade <- cumsum(df$signal)
-    
   if(df$on[nrow(df)] == 1) {     # no new trades in last period
     df$on[nrow(df)] = 0 ; df$signal[nrow(df)] = 0
   } else if (df$cross[nrow(df)] >0 | df$signal[nrow(df)] == -1) { # close trade if long at EOF
