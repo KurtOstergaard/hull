@@ -92,8 +92,8 @@ witching_hour <- date_time_build(get_year(start_date), get_month(start_date),
 last_call <- date_seq(add_seconds(witching_hour, -interval), to=end_date, by=86400)
 closing_time <- which(df$time %in% last_call) |>
   append(nrow(df))
-restart_time <- which(df$time %in% last_call) +1 
-restart_time <- append(1, restart_time)
+restart_time <- (which(df$time %in% last_call) +1 ) |>
+  append(1, after=0)
 
 the_high <- max(df$high)
 the_low <- min(df$low)
