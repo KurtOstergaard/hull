@@ -1,5 +1,5 @@
 #  hull2.R  -- hull moving average  trading system
-# rm(list=ls())
+rm(list=ls())
 library(conflicted)
 library(tidyverse, quietly = TRUE)
 library(lubridate, quietly = TRUE)
@@ -59,9 +59,9 @@ sourceCpp(
     ")
 
 product <- "ES"  #####  <- Yes, name it here. ES or NQ or whatever
-fast_seq <- 19
-slow_seq <- 3
-runs <- expand.grid(slow=seq(3, slow_seq, 1), fast=seq(19, fast_seq, 1))
+fast_seq <- 3
+slow_seq <- 19
+runs <- expand.grid(slow=seq(19, slow_seq, 1), fast=seq(3, fast_seq, 1))
 
 df_og <- read_csv("CME_MINI_ES1!, 1_f7bc0.csv", col_names = TRUE)
 # df_og <- read_csv("hull_one_minute.csv", col_names = TRUE)
@@ -73,6 +73,8 @@ first_row_time <- df$time[1] ; second_row_time <- df$time[2] ; third_row_time <-
 interval <- min(as.numeric(difftime(second_row_time, first_row_time, units = "secs")),
                 as.numeric(difftime(third_row_time, second_row_time, units = "secs")))
 if(interval <= 0) Warning("HOLY SHIT! WE HAVE REACHED THE END OF TIME!") # file sorted backwards?
+
+# candles is a string for in graphs
 candles <- if(interval>=3600) {
   sprintf("%.0f hr", interval/3600) 
   } else if (interval>=60) {
@@ -80,15 +82,18 @@ candles <- if(interval>=3600) {
   } else {
     sprintf("%.0f sec", interval)
   }
-
+# time management for markets operating 23/6, need daily stop and start 
 start_date <- min(df$time) 
 end_date <- max(df$time)
 date_range <- as.numeric(difftime(end_date, start_date, units = "days"))
-date_range_other <- date_count_between(start_date, end_date, "day")
 dates_run <- floor_date(start_date, unit="days"):floor_date(end_date, unit = "days")
-witching_hour <- times("21:00:00")
-
-# str(df$time)
+witching_hour <- date_time_build(get_year(start_date), get_month(start_date),
+  get_day(start_date), 21L, 0L, 0L, zone="UTC")
+last_call <- date_seq(add_seconds(witching_hour, -interval), to=end_date, by=86400)
+closing_time <- which(df$time %in% last_call) |>
+  append(nrow(df))
+restart_time <- which(df$time %in% last_call) +1 
+restart_time <- append(1, restart_time)
 
 the_high <- max(df$high)
 the_low <- min(df$low)
@@ -98,10 +103,8 @@ epoch <- paste0(get_month(start_date),"-", get_day(start_date), "-",
                 get_year(start_date)-2000," to ", get_month(end_date), 
                 "-", get_day(end_date), "-", get_year(end_date)-2000)
 
-
 start_value <- 1162  # required overnight margin in points
 skid <- 0   # skid is expected loss on trade execution, set to ZERO for testing!
-
 
 df |>
   ggplot(aes(x = time, y = close)) +
@@ -109,15 +112,15 @@ df |>
   geom_smooth(method = "lm")
 
 
-######################## optimization sequence ########################
+######################## optimization sequence #############################
 
-for (j in seq_len(nrow(runs))) {
-# j <- 1
+# for (j in seq_len(nrow(runs))) {
+j <- 1
 
   df <- df_og
   fast_lag <- runs$fast[j]
   slow_lag <- runs$slow[j]
-  if(fast_lag == slow_lag) {
+  if(fast_lag == slow_lag) {  # handle results record where fast=slow lag
     results[j,1:17] <- as_tibble_row(          
       c(j=j, fast_lag=fast_lag, slow_lag=slow_lag, ICAGR=0, drawdown=0, 
         bliss=0, lake=0, end_value=0, trade_test=0, 
@@ -126,43 +129,50 @@ for (j in seq_len(nrow(runs))) {
       .name_repair = "universal")
     next
     }
-
+  # exponential moving averages
   df$Efast <- ewmaRcpp(df$close, 20)
   df$Eslow <- ewmaRcpp(df$close, 30)
   
-  # calculate HMA, Hull Moving Avg, and ATR, average true range
+  # calculate HMA, Hull Moving Avg, cross and ATR, average true range
   df <- df |>
     select(time:close, Volume, Efast, Eslow) |>
     mutate(time = as.POSIXct(time, tz = "UTC"), # Ensure time is in POSIXct format
-           time_component = hms(format(time, format = "%T")),
            h_yc = high - lag(close),
            yc_l = lag(close) - low,
            range = high - low, 
     ATR = pmax(range, h_yc, yc_l, na.rm = TRUE),
     fast = HMA(close, fast_lag),
     slow = (HMA(close, slow_lag) +1e-6), 
-    dfast = if_else(fast-lag(fast)==0, 1e-7, fast-lag(fast)),
-    cross = dfast,
-    # cross = fast - slow,
+    dslow = if_else(slow-lag(slow)==0, 1e-7, slow-lag(slow)),
+    cross = dslow,    #  cross = fast - slow,
     on = if_else(cross > 0 & lag(cross) < 0, 1, 0), 
-    off = if_else(cross < 0 & lag(cross) > 0, -1, 0))
-
-  # drop first 10+ high lag rows to let moving averages 'warm up'
+    off = if_else(cross < 0 & lag(cross) > 0, -1, 0),
+    signal = on + off)
+    
+  # drop first bunch of lag rows to let moving averages 'warm up'
   df <-  slice(df, (max(slow_lag, fast_lag)+10):n())  
-  
-  last_call <- hour(21) - second(interval)
-
-    closing_time <- which(df$time_component %in% witching_hour)
-    restart_time <- closing_time + 1
-  
-  
-  df$on[1] <-  if_else(df$cross[1] > 0, 1, 0)  # catch first row signal, if there
-  
   df$off[1] <- 0
 
-    df <- df|>                         # trade details 
-    mutate(signal = on + off,
-           open_trade = cumsum(signal),
+  # handle restarts for 23/6 trading
+  for (i in seq_along(restart_time)) {  
+    df$on[i] <-  if_else(df$cross[i] > 0, 1, 0)  # catch first row signal, if there
+    df$signal[i] <- df$on[i]
+  }
+  
+    # close after 23/6 trading
+    for(k in seq_along(closing_time)) {
+      if(df$on[k] == 1) {     # no new trades in last period
+        df$on[k] = 0 ; df$signal[k] = 0
+      } else if (df$cross[k] >0 | df$signal[k] == -1) { # close trade if long at EOF
+        df$off[k] <- -1
+        df$signal[k] <- -1
+        df$open_trade[k] <- 0
+        df$sell_date[k] <- df$time[k]
+        df$sell_price[k] <- df$close[k] - skid       
+      }
+    }
+  df <- df |>
+    mutate(open_trade = cumsum(signal),
            buy_date = if_else(on == 1, as_datetime(lead(time), tz="America/New_York"), NA),
            sell_date = if_else(off == -1, as_datetime(lead(time), tz="America/New_York"), NA),
            buy_price = if_else(on == 1, lead(open) + skid, NA),
@@ -171,17 +181,9 @@ for (j in seq_len(nrow(runs))) {
     fill(buy_price) |>
     fill(buy_date)  |>
     drop_na(buy_price)
-
-  if(df$on[nrow(df)] == 1) {     # no new trades in last period
-    df$on[nrow(df)] = 0 ; df$signal[nrow(df)] = 0
-  } else if (df$cross[nrow(df)] >0 | df$signal[nrow(df)] == -1) { # close trade if long at EOF
-    df$off[nrow(df)] <- -1
-    df$signal[nrow(df)] <- -1
-    df$open_trade[nrow(df)] <- 0
-    df$sell_date[nrow(df)] <- df$time[nrow(df)]
-    df$sell_price[nrow(df)] <- df$close[nrow(df)] - skid       
-  }
+    
   
+    
   df <- df |>
     mutate(
       trade_pnl = if_else(signal == -1, (sell_price - buy_price) * buy_amount, 0),
@@ -262,7 +264,7 @@ for (j in seq_len(nrow(runs))) {
       scale_fill_manual("", values="gray80") +
       geom_point(aes(x=time, y=close), shape=3, alpha=0.8) +
       geom_segment(data=trades_w, aes(x=buy_date, y=buy_price, xend=sell_date,
-                                    yend=sell_price, color=factor(win_lose)), linewidth = 2) +
+              yend=sell_price, color=factor(win_lose)), linewidth = 2) +
       scale_color_manual(values= c("red", "green3")) +
       labs(title=sprintf("%s: fast: %0.f slow: %0.f, %.0f trades, ICAGR:, %.2f, bliss: %.2f, lake: %.2f", 
                          product, fast_lag, slow_lag, nrow(trades), ICAGR, bliss, lake),
@@ -312,7 +314,7 @@ for (j in seq_len(nrow(runs))) {
          width=10, height=8, units="in", dpi=300)
   # } # if printing statement close
     
-}       #################### optimization loop end    ##########################
+# }       #################### optimization loop end    ##########################
 
   
   # save the results and trades_global files
