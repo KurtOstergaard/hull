@@ -12,7 +12,6 @@ library(rlang, quietly = TRUE)
 library(clock, quietly = TRUE)
 library(ggrepel, quietly = TRUE)
 library(chron)
-library(clock)
 library(here)
 conflicts_prefer(dplyr::lag)
 conflicts_prefer(dplyr::filter)
@@ -59,13 +58,11 @@ sourceCpp(
     ")
 
 product <- "ES"  #####  <- Yes, name it here. ES or NQ or whatever
-fast_seq <- 3
-slow_seq <- 19
-runs <- expand.grid(slow=seq(19, slow_seq, 1), fast=seq(3, fast_seq, 1))
+fast_seq <- 1500
+slow_seq <- 3000
+runs <- expand.grid(slow=seq(2400, slow_seq, 100), fast=seq(300, fast_seq, 100))
 
-df_og <- read_csv("CME_MINI_ES1!, 1_f7bc0.csv", col_names = TRUE)
-# df_og <- read_csv("hull_one_minute.csv", col_names = TRUE)
-# df_og <- read_csv("hull_es.csv", col_names = TRUE)
+df_og <- read_csv("CME_MINI_ES1!, 1S_9e97e.csv", col_names = TRUE)
 
 # discern time interval from input file
 df <- df_og
@@ -90,13 +87,10 @@ dates_run <- floor_date(start_date, unit="days"):floor_date(end_date, unit = "da
 witching_hour <- date_time_build(get_year(start_date), get_month(start_date),
   get_day(start_date), 21L, 0L, 0L, zone="UTC")
 last_call <- date_seq(add_seconds(witching_hour, -interval), to=end_date, by=86400)
-closing_time <- which(df$time %in% last_call) |>
-  append(nrow(df))
-restart_time <- (which(df$time %in% last_call) +1 ) |>
-  append(1, after=0)
 
 the_high <- max(df$high)
 the_low <- min(df$low)
+the_range <- the_high - the_low
 trades_global = tibble() 
 results <- tibble() # create the file to collect the results of each run
 epoch <- paste0(get_month(start_date),"-", get_day(start_date), "-",
@@ -108,32 +102,36 @@ skid <- 0   # skid is expected loss on trade execution, set to ZERO for testing!
 
 df |>
   ggplot(aes(x = time, y = close)) +
-  geom_line(alpha = 0.4) +
-  geom_smooth(method = "lm")
+  geom_line(alpha = 0.4) 
+  # geom_smooth(method = "lm")
 
 
 ######################## optimization sequence #############################
 
-# for (j in seq_len(nrow(runs))) {
-j <- 1
+
+for (j in seq_len(nrow(runs))) {
+# j <- 98
 
   df <- df_og
   fast_lag <- runs$fast[j]
   slow_lag <- runs$slow[j]
-  if(fast_lag == slow_lag) {  # handle results record where fast=slow lag
-    results[j,1:17] <- as_tibble_row(          
-      c(j=j, fast_lag=fast_lag, slow_lag=slow_lag, ICAGR=0, drawdown=0, 
-        bliss=0, lake=0, end_value=0, trade_test=0, 
-        trade_count=0, wins=0, losses=0, win_rate=0,
-        trade_total_pnl=0, won=0, lost=0, dollar_won=0),
-      .name_repair = "universal")
-    next
-    }
-  # exponential moving averages
-  df$Efast <- ewmaRcpp(df$close, 20)
-  df$Eslow <- ewmaRcpp(df$close, 30)
   
-  # calculate HMA, Hull Moving Avg, cross and ATR, average true range
+  # if(fast_lag == slow_lag) {  # handle results record where fast=slow lag
+  #   results[j,1:17] <- as_tibble_row(          
+  #     c(j=j, fast_lag=fast_lag, slow_lag=slow_lag, ICAGR=0, drawdown=0, 
+  #       bliss=0, lake=0, end_value=0, trade_test=0, 
+  #       trade_count=0, wins=0, losses=0, win_rate=0,
+  #       trade_total_pnl=0, won=0, lost=0, dollar_won=0),
+  #     .name_repair = "universal")
+  #   next
+  # }
+  
+  # exponential moving averages
+  df$Efast <- ewmaRcpp(df$close, fast_seq)
+  # df$Eslow <- ewmaRcpp(df$close, slow_seq)
+  df$Eslow <- ewmaRcpp(df$close, runs$slow[j])
+  
+  # calculate HMA, Hull Moving Avg, cross trade signal and ATR, average true range
   df <- df |>
     select(time:close, Volume, Efast, Eslow) |>
     mutate(time = as.POSIXct(time, tz = "UTC"), # Ensure time is in POSIXct format
@@ -144,33 +142,30 @@ j <- 1
     fast = HMA(close, fast_lag),
     slow = (HMA(close, slow_lag) +1e-6), 
     dslow = if_else(slow-lag(slow)==0, 1e-7, slow-lag(slow)),
-    cross = dslow,    #  cross = fast - slow,
+    cross = fast - Eslow,
+    # cross = dslow,    #  cross = fast - slow,
     on = if_else(cross > 0 & lag(cross) < 0, 1, 0), 
     off = if_else(cross < 0 & lag(cross) > 0, -1, 0),
-    signal = on + off)
+    signal = on + off) |>
+    drop_na(on) |>
+    drop_na(off)
     
-  # drop first bunch of lag rows to let moving averages 'warm up'
-  df <-  slice(df, (max(slow_lag, fast_lag)+10):n())  
   df$off[1] <- 0
+  
+  # close and restart trades on market schedule 23/6
+  closing_time <- which(df$time %in% last_call) |>
+    append(nrow(df))
+  closing_time <- unique(closing_time)
+  restart_time <- (which(df$time %in% last_call) +1 ) |>
+    append(1, after=0)
+  restart_time <- restart_time[!restart_time %in% (nrow(df)+1) ]
 
-  # handle restarts for 23/6 trading
-  for (i in seq_along(restart_time)) {  
-    df$on[i] <-  if_else(df$cross[i] > 0, 1, 0)  # catch first row signal, if there
-    df$signal[i] <- df$on[i]
+  # reopen trades with market
+  for (num in restart_time) {  
+    df$on[num] <-  if_else(df$cross[num] > 0, 1, 0)  # catch first row signal, if there
+    df$signal[num] <- df$on[num]
   }
   
-    # close after 23/6 trading
-    for(k in seq_along(closing_time)) {
-      if(df$on[k] == 1) {     # no new trades in last period
-        df$on[k] = 0 ; df$signal[k] = 0
-      } else if (df$cross[k] >0 | df$signal[k] == -1) { # close trade if long at EOF
-        df$off[k] <- -1
-        df$signal[k] <- -1
-        df$open_trade[k] <- 0
-        df$sell_date[k] <- df$time[k]
-        df$sell_price[k] <- df$close[k] - skid       
-      }
-    }
   df <- df |>
     mutate(open_trade = cumsum(signal),
            buy_date = if_else(on == 1, as_datetime(lead(time), tz="America/New_York"), NA),
@@ -179,12 +174,24 @@ j <- 1
            sell_price = if_else(off == -1, lead(open) - skid, 0),
            buy_amount = 1,) |>  # no work on trade sizing yet, important though it is
     fill(buy_price) |>
-    fill(buy_date)  |>
-    drop_na(buy_price)
+    fill(buy_date)  
     
+    # close trades with market
+    for(k in closing_time) {
+      if(df$on[k] == 1) {     # no new trades in last period
+        df$on[k] = 0 ; df$signal[k] = 0
+      } else if (df$cross[k] >0 | df$signal[k] == -1) { 
+        df$off[k] <- -1
+        df$signal[k] <- -1
+        df$open_trade[k] <- 0
+        df$sell_date[k] <- df$time[k]
+        df$sell_price[k] <- df$close[k] - skid       
+      }
+    }
   
-    
+  # cume trade metrics
   df <- df |>
+    drop_na(buy_price) |>
     mutate(
       trade_pnl = if_else(signal == -1, (sell_price - buy_price) * buy_amount, 0),
       win_lose = as.factor(if_else(trade_pnl<0, "loser", "winner")),
@@ -226,17 +233,17 @@ j <- 1
   trade_pnl_percent = trade_pnl / buy_price)
   
   # risk and return calculation
-  end_value <- df$equity[nrow(df)]   # end_val <- end_value / 1000000
+  end_value <- df$equity[nrow(df)]  
   ratio <- end_value/ start_value
-  ICAGR <- if(ratio <= 0) 0 else log(ratio)/ (date_range / 365.25)
+  ICAGR <- if_else(ratio <= 0, 0, log(ratio)/(date_range/365.25))
   drawdown <- max(df$drawdown)
   lake <- sum(df$lake) / sum(df$equity)
   bliss <- ICAGR / drawdown
   trade_count <- nrow(trades)
   trade_total_pnl <- sum(trades$trade_pnl)
   zz <- split_fun(trades, trade_pnl)
-  wins <- zz[2,3] ; losses <- zz[1,3] ; won <- zz[2,2]; lost <- zz[1,2]
-  win_rate <- wins / trade_count ; dollar_won <- -zz[2,4]/zz[1,4]
+  wins <- zz[[2,3]] ; losses <- zz[[1,3]] ; won <- zz[[2,2]]; lost <- zz[[1,2]]
+  win_rate <- wins/trade_count ; dollar_won <- -zz[[2,4]]/zz[[1,4]]
   results[j,1:17] <- as_tibble_row(          
     c(j=j, fast_lag=fast_lag, slow_lag=slow_lag, ICAGR=ICAGR, drawdown=drawdown, 
       bliss=bliss, lake=lake, end_value=end_value, trade_test=trade_test, 
@@ -254,10 +261,10 @@ j <- 1
     trades_w <- trades |>
     filter(buy_date >"2023-09-06" & buy_date < "2023-09-07") 
     
-    #  only print for positive ICAGR
-  # if(ICAGR > 0) {  # graph trades by EMA with equity and market
+    #  only print for good ICAGR
+  if(ICAGR > 10) {  # graph trades by EMA with equity and market
     df |>        
-      filter(time >"2023-09-06" & time < "2023-09-07") |>
+      # filter(time >"2023-09-06" & time < "2023-09-07") |>
       ggplot(aes(x = time)) +
       geom_line(aes(x=time, y=slow), alpha=0.6) +
       geom_ribbon(aes(ymin=low, ymax=high, x=time, fill = "band"), alpha = 0.9)+
@@ -312,10 +319,13 @@ j <- 1
   ggsave(paste0(here("output", "lake over time "), candles," ", runs$fast[j], 
                 "-", runs$slow[j], " ", epoch, run_time, " ", j, ".pdf"), 
          width=10, height=8, units="in", dpi=300)
-  # } # if printing statement close
+  } # if printing statement close
     
-# }       #################### optimization loop end    ##########################
 
+    
+}       #################### optimization loop end    ##########################
+
+    
   
   # save the results and trades_global files
   run_id <- paste0( " ", candles," fast ", min(runs$fast), "-", max(runs$fast), " slow ",min(runs$slow),
@@ -336,8 +346,16 @@ j <- 1
   df |>
     ggplot(aes(x = time, y = close)) +
     geom_line(alpha = 0.4) +
-    geom_smooth(method = "lm")
+    geom_smooth(method = "lm") +
+    geom_line(aes(y=fast, alpha = 0.2)) +
+    geom_line(aes(y=slow, alpha = 0.2)) +
+    geom_line(aes(y=Efast, alpha = 0.2)) +
+    geom_line(aes(y=Eslow, alpha = 0.2)) 
+    
+    
   ####################   risk and return optimization scatterplots
+  # results <- results |>
+  #   filter(!fast_lag==slow_lag)
   
   results |>         # labels for EMA numbers, little white boxes
     ggplot(aes(x = ICAGR, y = drawdown, label = paste0(fast_lag, "-", slow_lag))) +
@@ -350,7 +368,7 @@ j <- 1
                max(runs$slow),", ", round(date_range, 0),
                          "D of data, ", epoch)) 
     # coord_cartesian(xlim = c(1, NA))
-  ggsave(paste0(here("output", "risk ICAGR v DD "), run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
+  ggsave(paste0(here("output", "risk ICAGR v DD "), run_id, run_time, ".pdf"), width=14, height=11, units="in", dpi=300)
   
   results |>
     ggplot(aes(x = lake, y = bliss, label = paste0(fast_lag, "-", slow_lag))) +
@@ -401,8 +419,8 @@ j <- 1
          subtitle=paste0(candles, " periods, fast ", min(runs$fast), "-", 
                          max(runs$fast), " slow ",min(runs$slow), "-", 
                          max(runs$slow),", ", round(date_range, 0),
-                         "D of data, ", epoch)) +
-    coord_cartesian(xlim = c(1, NA))
+                         "D of data, ", epoch)) 
+    # coord_cartesian(xlim = c(1, NA))
   ggsave(paste0(here("output", "risk ICAGR v lake "), run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
   
   results |>
@@ -418,7 +436,36 @@ j <- 1
   # coord_cartesian(ylim = c(NA,1))
   ggsave(paste0(here("output", "risk bliss v DD "), run_id, run_time, ".pdf"), width=10, height=8, units="in", dpi=300)
   
+  
+  
   library(plotly)
+  yo_fig <- results |>
+    select(slow_lag, fast_lag, ICAGR) |>
+    pivot_wider(names_from = slow_lag, values_from = ICAGR) |>
+    as.matrix()
+  rownames(yo_fig) <- yo_fig[,1]
+  yo_fig <- yo_fig[,-1]
+  
+  plot_ly(z = ~yo_fig) |> add_surface()
+
+  # row_names <- sort(unique(yo_icagr[,1]))
+    
+  # yo_fig[yo_fig < -1] <- -1
+    
+    
+    
+    plot_ly(z = ~yo_icagr) |> add_surface(
+    contours = list(
+      z = list(
+        show=TRUE,
+        usecolormap=TRUE,
+        highlightcolor="#ff0000",
+        project=list(z=TRUE)
+      )
+    )
+  )
+  yo_icagr
+  
   # volcano is a numeric matrix that ships with R
   fig <- plot_ly(z = ~volcano)
   fig <- fig %>% add_surface()
