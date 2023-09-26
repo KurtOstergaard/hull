@@ -1,4 +1,4 @@
-# viz.R visualizations for the hull.R model 
+# viz.R - surface visualizations for prospecting moving average pairs 
 library(tidyverse)
 library(plotly)
 library(processx)
