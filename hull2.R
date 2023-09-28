@@ -1,6 +1,6 @@
 #  hull2.R  -- hull moving average trading system
 
-rm(list=ls())
+rm(list=ls()) ###############
 library(conflicted)
 library(tidyverse, quietly = TRUE)
 library(lubridate, quietly = TRUE)
@@ -8,13 +8,13 @@ library(tidyquant, quietly = TRUE)
 library(Rcpp, quietly = TRUE)
 library(TTR, quietly = TRUE)
 library(plotly, quietly = TRUE)
-library(profvis, quietly = TRUE)
 library(rlang, quietly = TRUE)
 library(clock, quietly = TRUE)
 library(chron)
 library(here)
 conflicts_prefer(dplyr::lag)
 conflicts_prefer(dplyr::filter)
+theme_set(theme_light())                # ggplot theme or _bw()
 
 start_time <- Sys.time()               # for internal monitoring
 run_time <- paste0(" ", get_hour(start_time), "-", get_minute(start_time))
@@ -53,20 +53,20 @@ sourceCpp(
        }
        return s;
      }
-    ")
+    ")     ###################
 
-product <- "ES"  #####  <- Yes, name it here. ES or NQ or whatever
-fast_high <- 1500
-fast_low <- 300
-fast_step <- 100
-slow_high <- 3000
-slow_low <- 2400
-slow_step <- 100
-drying_paint <- (fast_high - fast_low)/fast_step * (slow_high-slow_low)/slow_step
+product <- "ES"  # Yes, name it here. ES or NQ or whatever
+fast_high <- 15
+fast_low <- 5
+fast_step <- 1
+slow_high <- 35
+slow_low <- 5
+slow_step <- 1
+drying_paint <- (fast_high - fast_low +1)/fast_step * (slow_high-slow_low+1)/slow_step
 runs <- expand.grid(slow=seq(slow_low, slow_high, slow_step), 
                     fast=seq(fast_low, fast_high, fast_step))
 
-df_og <- read_csv("CME_MINI_ES1!, 1S_9e97e.csv", col_names = TRUE)
+df_og <- read_csv("CME_MINI_ES1!, 1_d6519.csv", col_names = TRUE)
 
 # discern time interval from input file
 df <- df_og
@@ -83,7 +83,7 @@ candles <- if(interval>=3600) {
   } else {
     sprintf("%.0f sec", interval)
   }
-# time management for markets operating 23/6, need daily stop and start 
+# time management for markets operating 23/5, need daily stop and start 
 start_date <- min(df$time) 
 end_date <- max(df$time)
 date_range <- as.numeric(difftime(end_date, start_date, units = "days"))
@@ -112,44 +112,41 @@ df |>
   theme(legend.position = "none")
 
 
-
-######################## optimization sequence #############################
+###################### optimization sequence #############################
 
 
 for (j in seq_len(nrow(runs))) {
-# j <- 98
+# j <- 1
 
   df <- df_og
   fast_lag <- runs$fast[j]
   slow_lag <- runs$slow[j]
   
-  # if(fast_lag == slow_lag) {  # avoid error where fast=slow for same MA
-  #   results[j,1:17] <- as_tibble_row(          
-  #     c(j=j, fast_lag=fast_lag, slow_lag=slow_lag, ICAGR=0, drawdown=0, 
-  #       bliss=0, lake=0, end_value=0, trade_test=0, 
-  #       trade_count=0, wins=0, losses=0, win_rate=0,
-  #       trade_total_pnl=0, won=0, lost=0, dollar_won=0),
-  #     .name_repair = "universal")
-  #   next
-  # }
+  if(fast_lag == slow_lag) {  # avoid error where fast=slow for same MA
+    results[j,1:17] <- as_tibble_row(
+      c(j=j, fast_lag=fast_lag, slow_lag=slow_lag, ICAGR=0, drawdown=0,
+        bliss=0, lake=0, end_value=0, trade_test=0,
+        trade_count=0, wins=0, losses=0, win_rate=0,
+        trade_total_pnl=0, won=0, lost=0, dollar_won=0),
+      .name_repair = "universal")
+    next
+  }
   
   # exponential moving averages
-  df$Efast <- ewmaRcpp(df$close, fast_high)
+  df$Efast <- ewmaRcpp(df$close, runs$fast[j])    
   # df$Eslow <- ewmaRcpp(df$close, slow_high)
-  df$Eslow <- ewmaRcpp(df$close, runs$slow[j])
+  df$Eslow <- ewmaRcpp(df$close, runs$slow[j])  +1e-6
   
   # calculate HMA, Hull Moving Avg, cross trade signal and ATR, average true range
   df <- df |>
     select(time:close, Volume, Efast, Eslow) |>
     mutate(time = as.POSIXct(time, tz = "UTC"), # Ensure time is in POSIXct format
-           h_yc = high - lag(close),
-           yc_l = lag(close) - low,
-           range = high - low, 
-    ATR = pmax(range, h_yc, yc_l, na.rm = TRUE),
     fast = HMA(close, fast_lag),
     slow = (HMA(close, slow_lag) +1e-6), 
-    dslow = if_else(slow-lag(slow)==0, 1e-7, slow-lag(slow)),
-    cross = fast - Eslow,
+    # dfast = if_else(fast-lag(fast)==0, 1e-7, fast-lag(fast)),
+    # dslow = if_else(slow-lag(slow)==0, 1e-7, slow-lag(slow)),
+    cross = fast - slow,
+    # cross = fast - Eslow,
     # cross = dslow,    #  cross = fast - slow,
     on = if_else(cross > 0 & lag(cross) < 0, 1, 0), 
     off = if_else(cross < 0 & lag(cross) > 0, -1, 0),
@@ -159,7 +156,7 @@ for (j in seq_len(nrow(runs))) {
     
   df$off[1] <- 0
   
-  # close and restart trades on market schedule 23/6
+  # close and restart trades on market schedule 23/5
   closing_time <- which(df$time %in% last_call) |>
     append(nrow(df))
   closing_time <- unique(closing_time)
@@ -218,7 +215,8 @@ for (j in seq_len(nrow(runs))) {
     mutate(
       off=NULL, open_trade=NULL, buy_amount=NULL)
   
-  trades <- trades |>   #  MAE calc, make MFE too #######################
+  #  MAE  MFE calc
+  trades <- trades |>
   mutate(MAE = map_dbl(1:n(), ~ {
     row <- .x
     df |>
@@ -267,38 +265,40 @@ for (j in seq_len(nrow(runs))) {
     
   
 }       #################### optimization loop end    ##########################
+# j <- j +1  
 
-  
-  # save the results and trades_global files
-  run_id <- paste0( " ", candles," fast ", min(runs$fast), "-", max(runs$fast), " slow ",min(runs$slow),
-                    "-", max(runs$slow), " fr ", epoch)
-  results_file_name <- paste0(here("output", "results "), run_id, run_time, ".csv", sep="")
-  write_csv(results, results_file_name)
-  trade_file_name <- paste0(here("output", "trades "), run_id, run_time, ".csv", sep="")
-  write_csv(trades_global, trade_file_name)
-  
-  forever <- Sys.time() - start_time
-  secs <- forever  / nrow(runs)
-  sprintf("Yo, %1.2f min,  %1.2f per run, %i runs, %s records, over %1.2f days of data", 
-          forever, secs, nrow(results), format(nrow(df), big.mark=","), date_range)
-  
-  
-  ##########################
-  
-  df |>
-    ggplot(aes(x = time, y = close)) +
-    geom_line(alpha = 0.4) +
-    geom_smooth(method = "lm", linewidth = 10) +
-    geom_line(aes(y=fast, alpha = 0.2)) +
-    geom_line(aes(y=slow, alpha = 0.2)) +
-    geom_line(aes(y=Efast, alpha = 0.2)) +
-    geom_line(aes(y=Eslow, alpha = 0.2)) +
-    labs(title=paste("Run completed!"),
-         subtitle=paste0(candles, " periods, ", round(date_range, 0),
-                         "D of data, ", epoch,",   fast: ", min(runs$fast), "-", 
-                         max(runs$fast), " slow: ",min(runs$slow), "-", 
-                         max(runs$slow),", ",  "    High: ", the_high, " Low: ",
-                         the_low)) +
-    theme(legend.position = "none")
-  
-  
+
+# save the results and trades_global files
+run_id <- paste0( " ", candles," fast ", min(runs$fast), "-", max(runs$fast), 
+                  " slow ",min(runs$slow), "-", max(runs$slow), " fr ", epoch)
+results_file_name <- paste0(here("output", "results "), nrow(results), " runs ", 
+                            run_id, run_time, ".csv", sep="")
+write_csv(results, results_file_name)
+trade_file_name <- paste0(here("output", "trades "), nrow(runs), " runs", run_id, run_time, ".csv", sep="")
+write_csv(trades_global, trade_file_name)
+
+forever <- Sys.time() - start_time
+secs <- forever  / nrow(runs)
+sprintf("Yo, %1.2f min,  %1.2f per run, %i runs, %s records, over %1.2f days of data", 
+        forever, secs, nrow(results), format(nrow(df), big.mark=","), date_range)
+
+
+##########################
+
+df |>
+  ggplot(aes(x = time, y = close)) +
+  geom_line(alpha = 0.4) +
+  geom_smooth(method = "lm", linewidth = 10) +
+  geom_line(aes(y=fast, alpha = 0.2)) +
+  geom_line(aes(y=slow, alpha = 0.2)) +
+  geom_line(aes(y=Efast, alpha = 0.2)) +
+  geom_line(aes(y=Eslow, alpha = 0.2)) +
+  labs(title=paste("Run completed!"),
+       subtitle=paste0(candles, " periods, ", round(date_range, 0),
+                       "D of data, ", epoch,",   fast: ", min(runs$fast), "-", 
+                       max(runs$fast), " slow: ",min(runs$slow), "-", 
+                       max(runs$slow),", ",  "    High: ", the_high, " Low: ",
+                       the_low)) +
+  theme(legend.position = "none")
+
+
