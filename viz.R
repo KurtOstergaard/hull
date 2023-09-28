@@ -2,13 +2,19 @@
 library(tidyverse)
 library(plotly)
 library(processx)
+library(reticulate)
 library(here)
+# Prospecting surface graph for comparing two moving average ranges
+# 3D surface plot of two moving average pair's resulting growth rate
 
 run_id <- paste0( " ", product," ", candles," fast ", min(runs$fast), "-", max(runs$fast), " slow ",min(runs$slow),
                   "-", max(runs$slow), "  ", epoch)
+run_id
 
-# Prospecting surface graph for comparing two moving average ranges
-# 3D surface plot of two moving average pair's resulting growth rate
+fast_type <- "Hull"   # type of moving avg Hull or EMA
+slow_type <- "Hull"   # type of moving avg Hull or EMA
+
+results <- results |> dplyr::filter(drawdown != 0)
 res1 <- results |>
   select(slow_lag, fast_lag, ICAGR) |>
   pivot_wider(names_from = slow_lag, values_from = ICAGR) |>
@@ -22,10 +28,10 @@ fig1 <- plot_ly(x = ~colnames(res1), y = ~rownames(res1),  z = ~res1) |>
       usecolormap=TRUE,
       highlightcolor="#ff0000",
       project=list(z=TRUE)))) |>
-  layout(title = 'Moving Average Growth Rates',
+  plotly::layout(title = 'Moving Average Growth Rates',
          scene = list(
-           xaxis = list(title = 'EMA slow moving avg'),
-           yaxis = list(title = 'Hull fast moving avg'),
+           xaxis = list(title = paste0(slow_type, " slow moving avg")),
+           yaxis = list(title = paste0(fast_type, " fast moving avg")),
            zaxis = list(title = "ICAGR")))
 fig1  
 fig1_file_name <- paste0(here("output", "surface growth "), run_id, run_time, ".pdf", sep="")
@@ -44,11 +50,11 @@ fig2 <- plot_ly(x = ~colnames(res2), y = ~rownames(res2),  z = ~res2) |>
       usecolormap=TRUE,
       highlightcolor="#ff0000",
       project=list(z=TRUE)))) |>
-  layout(title = 'Moving Average Bliss',
+  plotly::layout(title = 'Moving Average Bliss',
          scene = list(
-                 xaxis = list(title = 'EMA slow moving avg'),
-                 yaxis = list(title = 'Hull fast moving avg'),
-                 zaxis = list(title = "Bliss")))
+           xaxis = list(title = paste0(slow_type, " slow moving avg")),
+           yaxis = list(title = paste0(fast_type, " fast moving avg")),
+           zaxis = list(title = "Bliss")))
 fig2
 fig2_file_name <- paste0(here("output", "surface bliss "), run_id, run_time, ".pdf", sep="")
 save_image(fig2, fig2_file_name)
@@ -67,10 +73,10 @@ fig3 <- plot_ly(x = ~colnames(res3), y = ~rownames(res3),  z = ~res3) |>
       usecolormap=TRUE,
       highlightcolor="#ff0000",
       project=list(z=TRUE)))) |>
-  layout(title = 'Moving Average Lake Ratio',
+  plotly::layout(title = 'Moving Average Lake Ratio',
          scene = list(
-           xaxis = list(title = 'EMA slow moving avg'),
-           yaxis = list(title = 'Hull fast moving avg'),
+           xaxis = list(title = paste0(slow_type, " slow moving avg")),
+           yaxis = list(title = paste0(fast_type, " fast moving avg")),
            zaxis = list(title = "Lake")))
 fig3
 fig3_file_name <- paste0(here("output", "surface lake "), run_id, run_time, ".pdf", sep="")
@@ -91,15 +97,27 @@ fig4 <- plot_ly(x = ~colnames(res4), y = ~rownames(res4),  z = ~res4) |>
       usecolormap=TRUE,
       highlightcolor="#ff0000",
       project=list(z=TRUE)))) |>
-  layout(title = 'Moving Average Remaining (1-DD)',
+  plotly::layout(title = 'Moving Average Remaining (1-DD)',
          scene = list(
-           xaxis = list(title = 'EMA slow moving avg'),
-           yaxis = list(title = 'Hull fast moving avg'),
+           xaxis = list(title = paste0(slow_type, " slow moving avg")),
+           yaxis = list(title = paste0(fast_type, " fast moving avg")),
            zaxis = list(title = "Drawdown")))
 fig4
 fig4_file_name <- paste0(here("output", "surface drawdown "), run_id, run_time, ".pdf", sep="")
 save_image(fig4, fig4_file_name)
 
 
-# res[res < -1] <- -1   # adds a floor for values
+# If the save_image() throws a reticulate error:
+# install.packages('reticulate') 
+# reticulate::install_miniconda() 
+# reticulate::conda_install('r-reticulate', 'python-kaleido') 
+# reticulate::conda_install('r-reticulate', 'plotly', channel = 'plotly') 
+# reticulate::use_miniconda('r-reticulate')
 
+
+
+
+
+# res[res < -1] <- -1   # adds a floor for values
+# fig1 <- plot_ly(x = ~colnames(res1), y = ~rownames(res1),  z = ~res1, type="surface")
+# fig1  
