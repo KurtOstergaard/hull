@@ -2,8 +2,6 @@
 
 library(tidyverse)
 library(ggrepel, quietly = TRUE)
-
-
 options(ggrepel.max.overlaps = Inf)      # ggrepel options for ggplot2
 theme_set(theme_light())                # ggplot theme or _bw()
 
