@@ -1,10 +1,59 @@
 #viz3.R - individual moving average pair graphs for examining trades and details
-
 library(tidyverse)
+library(lubridate)
+library(here)
 
-#  only print for good ICAGR
+process_csv_file <- function(file_path) {
+  data <- read_csv(file_path, show_col_types = FALSE)
+  
+  num_rows <- nrow(data)
+  file_name <- basename(file_path)
+  return(tibble(file_name, num_rows))
+}  
+
+#   ################ find files  ############
+# csv_files <- list.files(path=here("output"), pattern = "\\.csv$", full.names = TRUE)
+csv_files <- list.files(path=here("output"), pattern = "^trades.", full.names = TRUE)
+trade_files <- lapply(csv_files, process_csv_file) |>
+  bind_rows()
+colnames(trade_files) <- c("File Name", "Rows")
+View(trade_files)
+#   ################ load files  ############
+big_trades <- read_csv(trade_file_name, col_names = TRUE)
+# big_trades <- read_csv(here("output", "trades 1 runs 1 sec fast 580-580 slow 2680-2680 fr 9-18-23 to 9-19-23 21-51.csv"), col_names = TRUE)
+
+mkt <- df_og |> select(time:close)
+# mkt <- read_csv("CME_MINI_ES1!, 1S_9e97e.csv", col_names = TRUE) |>  select(time:close)
+
+
+mkt_high <- max(mkt$high) ; mkt_low <- min(mkt$low) ; mkt_range <- mkt_high - mkt_low
+fast_MA <- 19
+slow_MA <- 3
+
+these_trades <- big_trades |>
+  filter(MA_fast == fast_MA) |>
+  filter(MA_slow == slow_MA)
+
+pnl <- sum(these_trades$trade_pnl)
+
+mkt |>     
+  ggplot(aes(x = time, y=close), alpha=0.6) +
+  geom_line() +
+  geom_ribbon(aes(ymin=low, ymax=high, x=time, fill = "band"), alpha = 0.4)+
+  scale_fill_manual("", values="gray80") +
+  geom_segment(data=these_trades, aes(x=buy_date, y=buy_price, xend=sell_date,
+                                  yend=sell_price, color=factor(win_lose)), linewidth = 2) +
+  scale_color_manual(values= c("red", "green3")) +
+  labs(title=sprintf("%s: fast: %0.f slow: %0.f, %.0f trades", product, fast_MA, slow_MA, nrow(these_trades)),
+       subtitle=paste0(candles, "chart, ", round(date_range, 0), "D of data, ", epoch))+
+  xlab("Date")+
+  ylab(product) +
+  theme(legend.position = "none")
+
+
+
+
 df |>        
-  # filter(time >"2023-09-06" & time < "2023-09-07") |>
   ggplot(aes(x = time)) +
   geom_line(aes(x=time, y=slow), alpha=0.6) +
   geom_ribbon(aes(ymin=low, ymax=high, x=time, fill = "band"), alpha = 0.9)+
