@@ -12,9 +12,10 @@ run_id <- paste0( " ", product," ", candles," fast ", min(runs$fast), "-", max(r
 run_id
 
 fast_type <- "Hull"   # type of moving avg Hull or EMA
-slow_type <- "Hull"   # type of moving avg Hull or EMA
+slow_type <- "EMA"   # type of moving avg Hull or EMA
 
 results <- results |> dplyr::filter(drawdown != 0)
+
 res1 <- results |>
   select(slow_lag, fast_lag, ICAGR) |>
   pivot_wider(names_from = slow_lag, values_from = ICAGR) |>
@@ -115,6 +116,10 @@ save_image(fig4, fig4_file_name)
 # reticulate::use_miniconda('r-reticulate')
 
 
+# # volcano is a numeric matrix that ships with R
+# fig <- plot_ly(z = ~volcano)
+# fig <- fig %>% add_surface()
+# fig
 
 
 
