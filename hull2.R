@@ -56,12 +56,12 @@ sourceCpp(
     ")     ###################
 
 product <- "ES"  # Yes, name it here. ES or NQ or whatever
-fast_high <- 15
+fast_high <- 25
 fast_low <- 5
 fast_step <- 1
-slow_high <- 35
+slow_high <- 50
 slow_low <- 5
-slow_step <- 1
+slow_step <- 5
 drying_paint <- (fast_high - fast_low +1)/fast_step * (slow_high-slow_low+1)/slow_step
 runs <- expand.grid(slow=seq(slow_low, slow_high, slow_step), 
                     fast=seq(fast_low, fast_high, fast_step))
@@ -145,7 +145,7 @@ for (j in seq_len(nrow(runs))) {
     slow = (HMA(close, slow_lag) +1e-6), 
     # dfast = if_else(fast-lag(fast)==0, 1e-7, fast-lag(fast)),
     # dslow = if_else(slow-lag(slow)==0, 1e-7, slow-lag(slow)),
-    cross = fast - slow,
+    cross = fast - Eslow,              #                                cross moving avg selection
     # cross = fast - Eslow,
     # cross = dslow,    #  cross = fast - slow,
     on = if_else(cross > 0 & lag(cross) < 0, 1, 0), 
